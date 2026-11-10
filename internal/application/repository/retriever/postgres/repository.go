@@ -800,11 +800,12 @@ func generatedQuestionExclusionClause(kbIDs []string) clause.Expression {
 		placeholders[i] = "?"
 		vars[i] = id
 	}
+	// BM25 score ordering cannot evaluate column comparisons in the scan
+	// filter. Use a literal prefix test for the generated question's source ID.
 	return clause.Expr{
 		SQL: fmt.Sprintf(
-			"NOT (knowledge_base_id IN (%s) AND %s)",
-			strings.Join(placeholders, ", "),
-			types.GeneratedQuestionRowPredicate(""),
+			"NOT (knowledge_base_id IN (%s) AND source_type = %d AND chunk_id <> '' AND starts_with(source_id, chunk_id || '-'))",
+			strings.Join(placeholders, ", "), int(types.ChunkSourceType),
 		),
 		Vars: vars,
 	}

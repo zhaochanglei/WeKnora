@@ -86,7 +86,9 @@ func (r *DataSourceRepository) Update(ctx context.Context, ds *types.DataSource)
 		return errors.New("data source id is empty")
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(ds).Updates(ds).Error; err != nil {
+		// The sync worker owns these fields. A concurrent configuration write
+		// may still hold a snapshot from before the latest sync.
+		if err := tx.Model(ds).Omit("LastSyncAt", "LastSyncCursor", "LastSyncResult").Updates(ds).Error; err != nil {
 			return err
 		}
 		// GORM Updates(struct) deliberately skips zero values, which would make

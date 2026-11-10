@@ -51,6 +51,26 @@ func TestDataSourceRepositoryUpdateSyncStateClearsErrorMessage(t *testing.T) {
 	require.NotNil(t, stored.LastSyncAt)
 }
 
+func TestDataSourceRepositorySettingsUpdateKeepsNewerSyncCursor(t *testing.T) {
+	repo := NewDataSourceRepository(setupDataSourceRepoTestDB(t))
+	ctx := context.Background()
+	old := &types.DataSource{
+		ID: "ds-1", TenantID: 1, KnowledgeBaseID: "kb-1", Name: "DingTalk",
+		Type: types.ConnectorTypeDingTalk, LastSyncCursor: types.JSON(`{"revision":1}`),
+	}
+	require.NoError(t, repo.Create(ctx, old))
+	newer := *old
+	newer.LastSyncCursor = types.JSON(`{"revision":2}`)
+	require.NoError(t, repo.UpdateSyncState(ctx, &newer))
+
+	old.Name = "Renamed"
+	require.NoError(t, repo.Update(ctx, old))
+	stored, err := repo.FindByID(ctx, old.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Renamed", stored.Name)
+	assert.JSONEq(t, newer.LastSyncCursor.ToString(), stored.LastSyncCursor.ToString())
+}
+
 func TestDataSourceRepositoryUpdatePersistsDisabledSyncDeletions(t *testing.T) {
 	db := setupDataSourceRepoTestDB(t)
 	repo := NewDataSourceRepository(db)

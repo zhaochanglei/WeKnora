@@ -40,16 +40,17 @@ func TestKeywordsRetrieveScoreFunctionCompatibility(t *testing.T) {
 				RetrieverType: types.KeywordsRetrieverType,
 				Query:         "关键词测试 ' OR 1=1 --", TopK: 5,
 				KnowledgeBaseIDs: []string{"kb-test"}, KnowledgeIDs: []string{"doc-test"},
-				TagIDs: []string{"tag-test"},
+				TagIDs: []string{"tag-test"}, ExcludeGeneratedQuestionKBIDs: []string{"kb-test"},
 			}
 			query := `SELECT ` + regexp.QuoteMeta(scoreFunction) + `\(id\) as score,.*` +
 				`FROM "embeddings" WHERE "knowledge_base_id" = \$1.*` +
 				`"knowledge_id" = \$2.*"tag_id" = \$3.*` +
 				`content \|\|\| \$4.*is_enabled IS NULL OR is_enabled = \$5.*` +
-				`ORDER BY "score" DESC LIMIT \$6`
+				`NOT \(knowledge_base_id IN \(\$6\) AND source_type = [0-9]+ AND chunk_id <> '' AND starts_with\(source_id, chunk_id \|\| '-'\)\).* ` +
+				`ORDER BY "score" DESC LIMIT \$7`
 			for range 2 {
 				mock.ExpectQuery(query).
-					WithArgs("kb-test", "doc-test", "tag-test", params.Query, true, 5).
+					WithArgs("kb-test", "doc-test", "tag-test", params.Query, true, "kb-test", 5).
 					WillReturnRows(sqlmock.NewRows([]string{
 						"id", "chunk_id", "knowledge_id", "knowledge_base_id", "tag_id", "score",
 					}).

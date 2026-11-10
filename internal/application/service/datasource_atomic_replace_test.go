@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
@@ -65,6 +66,24 @@ func TestIngestItemReplacementFailureKeepsPreviousKnowledge(t *testing.T) {
 			require.Equal(t, 1, ks.replacements)
 		})
 	}
+}
+
+func TestIngestDingTalkItemRejectsVersionOlderThanIndex(t *testing.T) {
+	indexed := time.Date(2026, 11, 10, 12, 0, 0, 800_000_000, time.UTC)
+	repo := &atomicIngestRepo{row: &types.Knowledge{
+		ID: "current", Metadata: types.JSON(`{"source_updated_at":"2026-11-10T12:00:00.8Z"}`),
+	}}
+	ks := &atomicIngestService{sweepFakeKS: sweepFakeKS{repo: repo}}
+	s := &DataSourceService{knowledgeService: ks}
+	ds := &types.DataSource{ID: "ds-1", Type: types.ConnectorTypeDingTalk}
+	item := &types.FetchedItem{ExternalID: "doc", Content: []byte("old version"), FileName: "doc.txt",
+		UpdatedAt: indexed.Add(-time.Millisecond)}
+
+	result := &types.SyncResult{}
+	_, err := s.applyFetchedItem(context.Background(), ds, item, nil, result)
+	require.Error(t, err)
+	require.Equal(t, 1, result.Failed, "the cursor must stay retryable")
+	require.Zero(t, ks.replacements)
 }
 
 func TestIngestItemLookupFailureDoesNotCreateDuplicate(t *testing.T) {

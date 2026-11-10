@@ -10,10 +10,12 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/Tencent/WeKnora/internal/application/access"
+	"github.com/Tencent/WeKnora/internal/common/redislock"
 	"github.com/Tencent/WeKnora/internal/datasource"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
@@ -21,6 +23,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"github.com/hibiken/asynq"
+	"github.com/redis/go-redis/v9"
 )
 
 // DataSourceService implements the DataSourceService interface
@@ -35,6 +38,8 @@ type DataSourceService struct {
 	tenantRepo        interfaces.TenantRepository
 	tagService        interfaces.KnowledgeTagService
 	audit             interfaces.AuditLogService
+	redis             *redis.Client
+	localSyncs        sync.Map
 }
 
 // NewDataSourceService creates a new data source service
@@ -49,6 +54,7 @@ func NewDataSourceService(
 	tenantRepo interfaces.TenantRepository,
 	tagService interfaces.KnowledgeTagService,
 	audit interfaces.AuditLogService,
+	redisClient *redis.Client,
 ) interfaces.DataSourceService {
 	return &DataSourceService{
 		dsRepo:            dsRepo,
@@ -61,6 +67,7 @@ func NewDataSourceService(
 		tenantRepo:        tenantRepo,
 		tagService:        tagService,
 		audit:             audit,
+		redis:             redisClient,
 	}
 }
 
@@ -631,6 +638,37 @@ func (s *DataSourceService) ProcessSync(ctx context.Context, task *asynq.Task) e
 		logger.Errorf(ctx, "failed to unmarshal sync payload: %v", err)
 		return err
 	}
+	// Acquire before reading the data source so every attempt starts with
+	// the cursor committed by its predecessor.
+	key := "datasource:sync:" + payload.DataSourceID
+	if s.redis != nil {
+		return redislock.WithRenewableLock(ctx, s.redis, key, time.Minute, 10*time.Second, func(lockCtx context.Context) error {
+			return s.processSync(lockCtx, payload)
+		})
+	}
+	// Lite mode runs the task queue in-process.
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		done := make(chan struct{})
+		active, loaded := s.localSyncs.LoadOrStore(key, done)
+		if !loaded {
+			defer func() {
+				s.localSyncs.Delete(key)
+				close(done)
+			}()
+			return s.processSync(ctx, payload)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-active.(chan struct{}):
+		}
+	}
+}
+
+func (s *DataSourceService) processSync(ctx context.Context, payload types.DataSourceSyncPayload) error {
 	ctx = payload.Initiator.Apply(ctx)
 	taskID, _ := asynq.GetTaskID(ctx)
 	ctx = withKBActivityTask(ctx, taskID, payload.Trigger)
@@ -1457,7 +1495,11 @@ func (s *DataSourceService) ingestItem(ctx context.Context, ds *types.DataSource
 	// one. The knowledge row's UpdatedAt moves on every re-parse, so this is
 	// the only record of how old the document itself is.
 	if !item.UpdatedAt.IsZero() {
-		metadata["source_updated_at"] = item.UpdatedAt.UTC().Format(time.RFC3339)
+		layout := time.RFC3339
+		if ds.Type == types.ConnectorTypeDingTalk {
+			layout = time.RFC3339Nano
+		}
+		metadata["source_updated_at"] = item.UpdatedAt.UTC().Format(layout)
 	}
 	if !item.CreatedAt.IsZero() {
 		metadata["source_created_at"] = item.CreatedAt.UTC().Format(time.RFC3339)
@@ -1492,6 +1534,14 @@ func (s *DataSourceService) ingestItem(ctx context.Context, ds *types.DataSource
 						item.ExternalID,
 					),
 					Knowledge: existing,
+				}
+			}
+			if ds.Type == types.ConnectorTypeDingTalk {
+				// The index can be newer than the cursor after an interrupted
+				// run. Refuse the stale write and leave the cursor retryable.
+				stored, err := time.Parse(time.RFC3339Nano, existing.GetMetadata()["source_updated_at"])
+				if err == nil && item.UpdatedAt.Before(stored) {
+					return false, errors.New("DingTalk document is older than the indexed version")
 				}
 			}
 			_, err := s.knowledgeService.ReplaceKnowledgeFromDataSource(

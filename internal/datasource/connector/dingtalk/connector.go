@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -948,6 +949,11 @@ func (c *Connector) sync(
 			currentDocuments[document.ID] = struct{}{}
 			revision := document.revision()
 			oldRevision, existed := oldRevisions[document.ID]
+			if oldTime := dingTalkRevisionTime(oldRevision); !oldTime.IsZero() && document.modifiedAt().Before(oldTime) {
+				// A stale listing must not roll back either the index or cursor.
+				newRevisions[document.ID] = oldRevision
+				continue
+			}
 			if mode.skipUnchanged && revision != "" && existed && revision == oldRevision {
 				newRevisions[document.ID] = revision
 				continue
@@ -1668,6 +1674,13 @@ func uniqueIDs(ids []string) []string {
 		out = append(out, id)
 	}
 	return out
+}
+
+func dingTalkRevisionTime(value string) time.Time {
+	if millis, err := strconv.ParseInt(value, 10, 64); err == nil && millis > 0 {
+		return time.UnixMilli(millis)
+	}
+	return parseDingTalkTime(value)
 }
 
 func parseDingTalkTime(value string) time.Time {
