@@ -102,6 +102,7 @@ var binaryDocumentTypes = map[string]string{
 	"pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 	"xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	"pdf":  "application/pdf",
+	"txt":  "text/plain",
 }
 
 func (n node) isFolder() bool {
